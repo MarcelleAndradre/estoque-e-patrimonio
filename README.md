@@ -1,4 +1,4 @@
-# Estoque · Patrimônio — Grupo 5
+# Site de Estoque e Patrimonio
 
 Website dinâmico para controle de estoque e de patrimônio da Logística Inteligente Ltda.
 
