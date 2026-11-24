@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Estoque e Patrimônio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<!-- Tailwind CSS (CDN) e configuração do tema -->
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="js/tailwind.config.js"></script>
+
+<!-- React, ReactDOM e Babel (compila o JSX no navegador) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+
+<link rel="stylesheet" href="css/estilos.css">
+</head>
+<body>
+<div id="root" class="font-sans text-[15px] leading-relaxed"></div>
+
+<!-- Lógica do sistema (JavaScript puro, sem interface) -->
+<script src="js/utilitarios.js"></script>
+<script src="js/armazenamento.js"></script>
+<script src="js/regras.js"></script>
+<script src="js/validacao.js"></script>
+<script src="js/dados-exemplo.js"></script>
+
+<!-- Interface: componentes React (JSX) -->
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, useCallback, useLayoutEffect } = React;
+
+/* ---------- Componentes de base ---------- */
+function Field({ label, name, error, hint, children, className = '' }) {
+  const id = 'f-' + name;
+  return (
+    <div className={className}>
+      <label className="label" htmlFor={id}>{label}</label>
+      {React.cloneElement(children, { id, name, 'aria-invalid': !!error, 'aria-describedby': error ? 'e-' + name : undefined })}
+      {hint && <p className="text-xs text-slate-500 mt-1">{hint}</p>}
+      {error && <p id={'e-' + name} className="erro" role="alert">{error}</p>}
+    </div>
+  );
+}
+function Modal({ conf, onClose }) {
+  const okRef = useRef(null);
+  useEffect(() => {
+    if (!conf) return;
+    okRef.current && okRef.current.focus();
+    const k = e => { if (e.key === 'Escape') onClose(); };
+    addEventListener('keydown', k);
+    return () => removeEventListener('keydown', k);
+  }, [conf]);
+  if (!conf) return null;
+  return (
+    <div className="backdrop-in fixed inset-0 z-50 grid place-items-center p-4" style={{ background: 'rgba(2,6,23,.7)', backdropFilter: 'blur(4px)' }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="modal-t" className="glass modal-in max-w-md w-full p-6">
+        <h2 id="modal-t" className="font-display text-lg font-semibold text-white">{conf.titulo}</h2>
+        <p className="text-sm text-slate-400 mt-2">{conf.texto}</p>
+        <div className="mt-6 flex justify-end gap-2">
+          <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+          <button ref={okRef} className="btn btn-danger" onClick={() => { conf.onOk(); onClose(); }}>Confirmar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function Toasts({ items }) {
+  return (
+    <div role="status" aria-live="polite" className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-md space-y-2">
+      {items.map(t => (
+        <div key={t.id} className={`glass toast-in px-4 py-3 text-sm font-medium ${t.tipo === 'erro' ? 'text-rose-200 !border-rose-400/40' : 'text-cyan-100'}`}>{t.msg}</div>
+      ))}
+    </div>
+  );
+}
+function Kpi({ rot, val, sub }) {
+  return (
+    <div className="glass p-4 sm:p-5 min-w-0">
+      <p className="eyebrow">{rot}</p>
+      <p className="kpi mt-2">{val}</p>
+      <p className="text-xs text-slate-500 mt-2">{sub}</p>
+    </div>
+  );
+}
+
+/* ---------- Painel ---------- */
+function Painel({ db }) {
+  const itens = db.products.map(p => ({ p, s: saldo(db, p) }));
+  const abaixo = itens.filter(x => x.s < x.p.estoqueMinimo).sort((a, b) => (b.p.estoqueMinimo - b.s) - (a.p.estoqueMinimo - a.s));
+  const valorEst = itens.reduce((t, x) => t + x.s * x.p.custo, 0);
+  const mes = hojeISO().slice(0, 7);
+  const movMes = db.movements.filter(m => m.data.startsWith(mes)).length;
+  const valorPat = db.assets.reduce((t, a) => t + a.valor, 0);
+  const cont = new Map();
+  db.movements.forEach(m => cont.set(m.produtoId, (cont.get(m.produtoId) || 0) + m.qtd));
+  const top = [...cont.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const maxTop = top.length ? top[0][1] : 1;
+  const total = db.assets.length || 1;
+  const cls = { 'Em uso': 'b-ok', 'Em manutenção': 'b-alerta', 'Baixado': 'b-neutro' };
+  const ult = [...db.movements].sort((a, b) => b.criadoEm.localeCompare(a.criadoEm)).slice(0, 5);
+
+  return (
+    <div className="space-y-6 fade-in">
+      <div>
+        <p className="eyebrow">Visão geral</p>
+        <h2 className="font-display text-3xl font-semibold text-white mt-1">Painel de indicadores</h2>
+        <p className="text-slate-400 text-sm mt-1">Recalculado a cada cadastro, entrada ou saída.</p>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Kpi rot="Itens cadastrados" val={num.format(db.products.length)} sub={`${abaixo.length} abaixo do mínimo`} />
+        <Kpi rot="Valor em estoque" val={brl.format(valorEst)} sub="saldo × custo unitário" />
+        <Kpi rot="Movimentações no mês" val={num.format(movMes)} sub={mes.split('-').reverse().join('/')} />
+        <Kpi rot="Valor do patrimônio" val={brl.format(valorPat)} sub={`${db.assets.length} bens cadastrados`} />
+      </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+        <section className="glass p-5 lg:col-span-3 min-w-0" aria-labelledby="h-alert">
+          <h3 id="h-alert" className="font-display font-semibold text-white mb-4">Estoque abaixo do mínimo</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr><th className="th">Produto</th><th className="th text-right">Saldo</th><th className="th text-right">Mínimo</th><th className="th text-right">Falta</th></tr></thead>
+              <tbody>
+                {abaixo.length ? abaixo.map(({ p, s }) => (
+                  <tr key={p.id}>
+                    <td className="td"><span className="text-slate-100">{p.nome}</span><br /><span className="font-mono text-xs text-cyan-400/80">{p.sku}</span></td>
+                    <td className="td text-right tabular-nums">{num.format(s)} {p.unidade}</td>
+                    <td className="td text-right tabular-nums">{num.format(p.estoqueMinimo)}</td>
+                    <td className="td text-right tabular-nums font-semibold text-rose-300">{num.format(p.estoqueMinimo - s)}</td>
+                  </tr>
+                )) : <tr><td className="td text-slate-500" colSpan={4}>Nenhum produto abaixo do mínimo.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section className="glass p-5 lg:col-span-2 min-w-0" aria-labelledby="h-top">
+          <h3 id="h-top" className="font-display font-semibold text-white">Mais movimentados</h3>
+          <p className="text-xs text-slate-500 mb-4">Soma de entradas e saídas por produto.</p>
+          <ul className="space-y-4">
+            {top.length ? top.map(([id, q]) => {
+              const p = db.products.find(x => x.id === id);
+              return (
+                <li key={id}>
+                  <div className="flex justify-between text-sm gap-2"><span className="truncate text-slate-200">{p.nome}</span><span className="tabular-nums font-semibold text-cyan-300">{num.format(q)} {p.unidade}</span></div>
+                  <div className="track mt-2"><div className="bar" style={{ width: (q / maxTop * 100).toFixed(1) + '%' }} /></div>
+                </li>
+              );
+            }) : <li className="text-sm text-slate-500">Sem movimentações.</li>}
+          </ul>
+        </section>
+      </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <section className="glass p-5" aria-labelledby="h-status">
+          <h3 id="h-status" className="font-display font-semibold text-white mb-4">Patrimônio por status</h3>
+          <ul className="space-y-4">
+            {['Em uso', 'Em manutenção', 'Baixado'].map(st => {
+              const n = db.assets.filter(a => a.status === st).length;
+              return (
+                <li key={st}>
+                  <div className="flex justify-between text-sm"><span className={cls[st] === 'b-ok' ? 'text-mint' : cls[st] === 'b-alerta' ? 'text-amber' : 'text-slate-400'}>{st}</span><span className="tabular-nums font-semibold text-slate-100">{n} {n === 1 ? 'bem' : 'bens'}</span></div>
+                  <div className="track mt-2"><div className="bar" style={{ width: (n / total * 100).toFixed(1) + '%' }} /></div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+        <section className="glass p-5" aria-labelledby="h-ult">
+          <h3 id="h-ult" className="font-display font-semibold text-white mb-2">Últimas movimentações</h3>
+          <ul className="divide-y divide-slate-800/70">
+            {ult.length ? ult.map(m => {
+              const p = db.products.find(x => x.id === m.produtoId);
+              return (
+                <li key={m.id} className="py-3 flex justify-between gap-3 text-sm">
+                  <span className="min-w-0"><span className="text-slate-100">{p.nome}</span><br /><span className="text-xs text-slate-500">{fmtData(m.data)} · {m.documento}</span></span>
+                  <span className={`font-mono font-semibold self-start ${m.tipo === 'entrada' ? 'text-mint' : 'text-rose-300'}`}>{m.tipo === 'entrada' ? '+' : '−'}{num.format(m.qtd)}</span>
+                </li>
+              );
+            }) : <li className="text-sm text-slate-500 py-3">Nenhuma movimentação registrada.</li>}
+          </ul>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Produtos ---------- */
+function Produtos({ db, ctx }) {
+  const [editing, setEditing] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [erros, setErros] = useState({});
+  const [busca, setBusca] = useState('');
+  const [cat, setCat] = useState('');
+  const formRef = useRef(null);
+  const cats = [...new Set(db.products.map(p => p.categoria))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  const lista = db.products.filter(p =>
+    (!cat || p.categoria === cat) &&
+    (!busca || p.nome.toLowerCase().includes(busca.toLowerCase()) || p.sku.toLowerCase().includes(busca.toLowerCase())));
+
+  const abrir = p => { setEditing(p); setErros({}); setShowForm(true); setTimeout(() => formRef.current && formRef.current.querySelector('input,select').focus(), 0); };
+  const fechar = () => { setShowForm(false); setEditing(null); setErros({}); };
+
+  function submit(e) {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(e.currentTarget));
+    Object.keys(d).forEach(k => typeof d[k] === 'string' && (d[k] = d[k].trim()));
+    const editId = editing ? editing.id : null;
+    const er = validProduto(db, d, editId);
+    setErros(er);
+    if (Object.keys(er).length) return;
+    const dados = { sku: d.sku.toUpperCase(), nome: d.nome, categoria: d.categoria, unidade: d.unidade, local: d.local.toUpperCase(), estoqueMinimo: Number(d.estoqueMinimo), custo: toNum(d.custo) };
+    if (editId) ctx.mutate(n => Object.assign(n.products.find(x => x.id === editId), dados), 'Alterou', 'Produto', dados.sku);
+    else ctx.mutate(n => n.products.push({ id: uid(), ...dados, saldoInicial: Number(d.saldoInicial) }), 'Cadastrou', 'Produto', dados.sku);
+    fechar();
+    ctx.notify('Produto salvo.');
+  }
+  function excluir(p) {
+    if (db.movements.some(m => m.produtoId === p.id)) return ctx.notify(`"${p.nome}" tem movimentações e não pode ser excluído. O histórico precisa ser preservado.`, 'erro');
+    ctx.ask('Excluir produto?', `"${p.nome}" será removido do cadastro.`, () => {
+      ctx.mutate(n => { n.products = n.products.filter(x => x.id !== p.id); }, 'Excluiu', 'Produto', p.sku);
+      ctx.notify('Produto excluído.');
+    });
+  }
+
+  return (
+    <div className="space-y-5 fade-in">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">Catálogo</p>
+          <h2 className="font-display text-3xl font-semibold text-white mt-1">Produtos em estoque</h2>
+          <p className="text-slate-400 text-sm mt-1">Cada produto tem código único e estoque mínimo para alerta.</p>
+        </div>
+        <button className="btn btn-primary" onClick={() => showForm && !editing ? fechar() : abrir(null)}>+ Novo produto</button>
+      </div>
+
+      {showForm && (
+        <form ref={formRef} key={editing ? editing.id : 'novo'} onSubmit={submit} noValidate className="glass fade-in p-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <h3 className="sm:col-span-2 lg:col-span-3 font-display font-semibold text-white">{editing ? `Editar ${editing.sku}` : 'Novo produto'}</h3>
+          <Field label="Código (SKU)" name="sku" error={erros.sku} className=""><input className="field font-mono uppercase" defaultValue={editing?.sku} placeholder="MAT-001" autoComplete="off" /></Field>
+          <Field label="Nome do produto" name="nome" error={erros.nome}><input className="field" defaultValue={editing?.nome} autoComplete="off" /></Field>
+          <Field label="Categoria" name="categoria" error={erros.categoria}><input className="field" list="dl-cats" defaultValue={editing?.categoria} autoComplete="off" /></Field>
+          <Field label="Unidade" name="unidade" error={erros.unidade}><input className="field" placeholder="un, cx, par, rolo" defaultValue={editing?.unidade} /></Field>
+          <Field label="Localização" name="local" error={erros.local}><input className="field font-mono" placeholder="A-01" defaultValue={editing?.local} /></Field>
+          <Field label="Estoque mínimo" name="estoqueMinimo" error={erros.estoqueMinimo}><input className="field" inputMode="numeric" defaultValue={editing?.estoqueMinimo} /></Field>
+          <Field label="Custo unitário (R$)" name="custo" error={erros.custo}><input className="field" inputMode="decimal" placeholder="0,00" defaultValue={editing ? String(editing.custo).replace('.', ',') : ''} /></Field>
+          <Field label="Saldo inicial" name="saldoInicial" error={erros.saldoInicial} hint="Depois de cadastrado, o saldo muda só por movimentação."><input className="field" inputMode="numeric" disabled={!!editing} defaultValue={editing ? editing.saldoInicial : ''} /></Field>
+          <datalist id="dl-cats">{cats.map(c => <option key={c} value={c} />)}</datalist>
+          <div className="sm:col-span-2 lg:col-span-3 flex flex-wrap justify-end gap-2">
+            <button type="button" className="btn btn-ghost" onClick={fechar}>Cancelar</button>
+            <button type="submit" className="btn btn-primary">Salvar produto</button>
+          </div>
+        </form>
+      )}
+
+      <div className="glass p-4 grid gap-3 sm:grid-cols-[1fr_220px]">
+        <Field label="Buscar por nome ou código" name="busca"><input type="search" className="field" value={busca} onChange={e => setBusca(e.target.value)} /></Field>
+        <Field label="Categoria" name="cat"><select className="field" value={cat} onChange={e => setCat(e.target.value)}><option value="">Todas as categorias</option>{cats.map(c => <option key={c}>{c}</option>)}</select></Field>
+      </div>
+
+      <div className="glass overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr><th className="th">Código</th><th className="th">Produto</th><th className="th">Categoria</th><th className="th text-right">Saldo</th><th className="th text-right">Mínimo</th><th className="th">Situação</th><th className="th">Local</th><th className="th">Ações</th></tr></thead>
+            <tbody>
+              {lista.map(p => {
+                const s = saldo(db, p); const [txt, c] = situacao(db, p);
+                return (
+                  <tr key={p.id} className={editing && editing.id === p.id ? 'is-selected' : ''}>
+                    <td className="td font-mono text-xs text-cyan-300/90">{p.sku}</td>
+                    <td className="td font-medium text-slate-100">{p.nome}</td>
+                    <td className="td text-slate-400">{p.categoria}</td>
+                    <td className="td text-right tabular-nums">{num.format(s)} {p.unidade}</td>
+                    <td className="td text-right tabular-nums text-slate-400">{num.format(p.estoqueMinimo)}</td>
+                    <td className="td"><span className={`badge ${c}`}>{txt}</span></td>
+                    <td className="td font-mono text-xs text-slate-400">{p.local}</td>
+                    <td className="td whitespace-nowrap">
+                      <button className="btn btn-ghost btn-sm" onClick={() => abrir(p)} aria-label={`Editar ${p.nome}`}>Editar</button>{' '}
+                      <button className="btn btn-danger btn-sm" onClick={() => excluir(p)} aria-label={`Excluir ${p.nome}`}>Excluir</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {!lista.length && <p className="p-8 text-center text-slate-500 text-sm">Nenhum produto encontrado com esse filtro.</p>}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Movimentações ---------- */
+function Movimentacoes({ db, ctx }) {
+  const [produtoId, setProdutoId] = useState('');
+  const [tipo, setTipo] = useState('entrada');
+  const [filtroTipo, setFiltroTipo] = useState('');
+  const [erros, setErros] = useState({});
+  const formRef = useRef(null);
+  const p = db.products.find(x => x.id === produtoId);
+  const lista = db.movements.filter(m => !filtroTipo || m.tipo === filtroTipo).sort((a, b) => b.criadoEm.localeCompare(a.criadoEm));
+
+  function submit(e) {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(e.currentTarget));
+    d.produtoId = produtoId; d.tipo = tipo;
+    Object.keys(d).forEach(k => typeof d[k] === 'string' && (d[k] = d[k].trim()));
+    const er = validMov(db, d);
+    setErros(er);
+    if (Object.keys(er).length) return;
+    const qtd = Number(d.qtd);
+    const atual = saldo(db, p);
+    const novo = tipo === 'entrada' ? atual + qtd : atual - qtd;
+    ctx.mutate(n => n.movements.push({ id: uid(), produtoId, tipo, qtd, data: d.data, documento: d.documento, responsavel: d.responsavel, obs: d.obs || '', criadoEm: new Date().toISOString(), saldoApos: novo }),
+      tipo === 'entrada' ? 'Entrada' : 'Saída', 'Estoque', `${num.format(qtd)} ${p.unidade} · ${p.sku} · ${d.documento}`);
+    e.currentTarget.qtd.value = ''; e.currentTarget.documento.value = ''; e.currentTarget.obs.value = '';
+    setErros({});
+    ctx.notify(`${tipo === 'entrada' ? 'Entrada' : 'Saída'} registrada. Novo saldo: ${num.format(novo)} ${p.unidade}.`);
+  }
+
+  return (
+    <div className="space-y-5 fade-in">
+      <div>
+        <p className="eyebrow">Fluxo</p>
+        <h2 className="font-display text-3xl font-semibold text-white mt-1">Entradas e saídas</h2>
+        <p className="text-slate-400 text-sm mt-1">Toda movimentação atualiza o saldo e fica registrada no histórico.</p>
+      </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+        <form ref={formRef} onSubmit={submit} noValidate className="glass p-5 space-y-4 lg:col-span-2 min-w-0">
+          <h3 className="font-display font-semibold text-white">Registrar movimentação</h3>
+          <fieldset>
+            <legend className="label">Tipo</legend>
+            <div className="grid grid-cols-2 gap-2">
+              {[['entrada', 'Entrada', 'text-mint'], ['saida', 'Saída', 'text-rose-300']].map(([v, l, c]) => (
+                <label key={v} className={`cursor-pointer rounded-xl border px-3 py-2.5 text-center text-sm font-semibold transition ${tipo === v ? 'border-cyan-400/70 bg-cyan-400/10 ' + c : 'border-line text-slate-400 hover:border-slate-500'}`}>
+                  <input type="radio" name="tipo" value={v} checked={tipo === v} onChange={() => setTipo(v)} className="sr-only" />{l}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <Field label="Produto" name="produtoId" error={erros.produtoId}>
+            <select className="field" value={produtoId} onChange={e => setProdutoId(e.target.value)}>
+              <option value="">Selecione um produto</option>
+              {[...db.products].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')).map(x => <option key={x.id} value={x.id}>{x.sku} · {x.nome}</option>)}
+            </select>
+          </Field>
+          <p className="text-sm rounded-xl border border-cyan-400/20 bg-cyan-400/5 p-3 text-slate-300" aria-live="polite">
+            {p ? <>Saldo atual: <strong className="tabular-nums text-cyan-300">{num.format(saldo(db, p))} {p.unidade}</strong> · mínimo {num.format(p.estoqueMinimo)} · <span className="text-slate-400">{situacao(db, p)[0].toLowerCase()}</span></> : 'Escolha um produto para ver o saldo.'}
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Quantidade" name="qtd" error={erros.qtd}><input className="field" inputMode="numeric" /></Field>
+            <Field label="Data" name="data" error={erros.data}><input type="date" className="field" defaultValue={hojeISO()} max={hojeISO()} /></Field>
+          </div>
+          <Field label="Documento (NF, pedido ou requisição)" name="documento" error={erros.documento}><input className="field" autoComplete="off" /></Field>
+          <Field label="Responsável pelo registro" name="responsavel" error={erros.responsavel}><input className="field" autoComplete="off" /></Field>
+          <Field label="Observação (opcional)" name="obs"><input className="field" maxLength={120} /></Field>
+          <button type="submit" className="btn btn-primary w-full">Registrar movimentação</button>
+        </form>
+
+        <section className="glass p-5 lg:col-span-3 min-w-0" aria-labelledby="h-hist">
+          <div className="flex flex-wrap items-end justify-between gap-3 mb-4">
+            <h3 id="h-hist" className="font-display font-semibold text-white">Histórico</h3>
+            <div className="w-full sm:w-44"><Field label="Tipo" name="filtroTipo"><select className="field" value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)}><option value="">Todos</option><option value="entrada">Entradas</option><option value="saida">Saídas</option></select></Field></div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr><th className="th">Data</th><th className="th">Produto</th><th className="th">Tipo</th><th className="th text-right">Qtd</th><th className="th">Documento</th><th className="th">Responsável</th><th className="th text-right">Saldo após</th></tr></thead>
+              <tbody>
+                {lista.map(m => {
+                  const q = db.products.find(x => x.id === m.produtoId);
+                  return (
+                    <tr key={m.id}>
+                      <td className="td tabular-nums whitespace-nowrap text-slate-400">{fmtData(m.data)}</td>
+                      <td className="td">{q.nome}<br /><span className="font-mono text-xs text-slate-500">{q.sku}</span></td>
+                      <td className="td"><span className={`badge ${m.tipo === 'entrada' ? 'b-ok' : 'b-neutro'}`}>{m.tipo === 'entrada' ? 'Entrada' : 'Saída'}</span></td>
+                      <td className="td text-right tabular-nums">{num.format(m.qtd)}</td>
+                      <td className="td">{m.documento}</td>
+                      <td className="td text-slate-400">{m.responsavel}</td>
+                      <td className="td text-right tabular-nums text-cyan-300">{num.format(m.saldoApos)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {!lista.length && <p className="p-8 text-center text-slate-500 text-sm">Nenhuma movimentação com esse filtro.</p>}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Patrimônio ---------- */
+function Patrimonio({ db, ctx }) {
+  const [editing, setEditing] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [erros, setErros] = useState({});
+  const [busca, setBusca] = useState('');
+  const [st, setSt] = useState('');
+  const formRef = useRef(null);
+  const cats = [...new Set(db.assets.map(a => a.categoria))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  const q = busca.trim().toLowerCase();
+  const lista = db.assets.filter(a => (!st || a.status === st) && (!q || [a.tag, a.descricao, a.local, a.responsavel].some(x => x.toLowerCase().includes(q))));
+  const cls = { 'Em uso': 'b-ok', 'Em manutenção': 'b-alerta', 'Baixado': 'b-neutro' };
+
+  const abrir = a => { setEditing(a); setErros({}); setShowForm(true); setTimeout(() => formRef.current && formRef.current.querySelector('input,select').focus(), 0); };
+  const fechar = () => { setShowForm(false); setEditing(null); setErros({}); };
+
+  function submit(e) {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(e.currentTarget));
+    Object.keys(d).forEach(k => typeof d[k] === 'string' && (d[k] = d[k].trim()));
+    const editId = editing ? editing.id : null;
+    const er = validPatrimonio(db, d, editId);
+    setErros(er);
+    if (Object.keys(er).length) return;
+    const dados = { tag: d.tag.toUpperCase(), descricao: d.descricao, categoria: d.categoria, local: d.local, responsavel: d.responsavel, status: d.status, dataAquisicao: d.dataAquisicao, valor: toNum(d.valor) };
+    if (editId) ctx.mutate(n => Object.assign(n.assets.find(x => x.id === editId), dados), 'Alterou', 'Patrimônio', dados.tag);
+    else ctx.mutate(n => n.assets.push({ id: uid(), ...dados }), 'Cadastrou', 'Patrimônio', dados.tag);
+    fechar();
+    ctx.notify('Bem salvo.');
+  }
+  function excluir(a) {
+    ctx.ask('Excluir bem patrimonial?', `${a.tag} · ${a.descricao} será removido. Para bens fora de uso, prefira o status "Baixado".`, () => {
+      ctx.mutate(n => { n.assets = n.assets.filter(x => x.id !== a.id); }, 'Excluiu', 'Patrimônio', a.tag);
+      ctx.notify('Bem excluído.');
+    });
+  }
+
+  return (
+    <div className="space-y-5 fade-in">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">Ativos</p>
+          <h2 className="font-display text-3xl font-semibold text-white mt-1">Controle de patrimônio</h2>
+          <p className="text-slate-400 text-sm mt-1">Bens de uso da operação, com etiqueta patrimonial única.</p>
+        </div>
+        <button className="btn btn-primary" onClick={() => showForm && !editing ? fechar() : abrir(null)}>+ Novo bem</button>
+      </div>
+
+      {showForm && (
+        <form ref={formRef} key={editing ? editing.id : 'novo'} onSubmit={submit} noValidate className="glass fade-in p-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <h3 className="sm:col-span-2 lg:col-span-4 font-display font-semibold text-white">{editing ? `Editar ${editing.tag}` : 'Novo bem'}</h3>
+          <Field label="Etiqueta patrimonial" name="tag" error={erros.tag}><input className="field font-mono uppercase" placeholder="PAT-0006" defaultValue={editing?.tag} autoComplete="off" /></Field>
+          <Field label="Descrição" name="descricao" error={erros.descricao} className="sm:col-span-2"><input className="field" defaultValue={editing?.descricao} autoComplete="off" /></Field>
+          <Field label="Categoria" name="categoria" error={erros.categoria}><input className="field" list="dl-pcats" defaultValue={editing?.categoria} autoComplete="off" /></Field>
+          <datalist id="dl-pcats">{cats.map(c => <option key={c} value={c} />)}</datalist>
+          <Field label="Local" name="local" error={erros.local}><input className="field" defaultValue={editing?.local} /></Field>
+          <Field label="Responsável" name="responsavel" error={erros.responsavel}><input className="field" defaultValue={editing?.responsavel} autoComplete="off" /></Field>
+          <Field label="Status" name="status"><select className="field" defaultValue={editing?.status || 'Em uso'}><option>Em uso</option><option>Em manutenção</option><option>Baixado</option></select></Field>
+          <Field label="Data de aquisição" name="dataAquisicao" error={erros.dataAquisicao}><input type="date" className="field" max={hojeISO()} defaultValue={editing?.dataAquisicao} /></Field>
+          <Field label="Valor (R$)" name="valor" error={erros.valor}><input className="field" inputMode="decimal" defaultValue={editing ? String(editing.valor).replace('.', ',') : ''} /></Field>
+          <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap justify-end gap-2">
+            <button type="button" className="btn btn-ghost" onClick={fechar}>Cancelar</button>
+            <button type="submit" className="btn btn-primary">Salvar bem</button>
+          </div>
+        </form>
+      )}
+
+      <div className="glass p-4 grid gap-3 sm:grid-cols-[1fr_220px]">
+        <Field label="Buscar por etiqueta, descrição, local ou responsável" name="pbusca"><input type="search" className="field" value={busca} onChange={e => setBusca(e.target.value)} /></Field>
+        <Field label="Status" name="pst"><select className="field" value={st} onChange={e => setSt(e.target.value)}><option value="">Todos</option><option>Em uso</option><option>Em manutenção</option><option>Baixado</option></select></Field>
+      </div>
+
+      <div className="glass overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr><th className="th">Etiqueta</th><th className="th">Descrição</th><th className="th">Local</th><th className="th">Responsável</th><th className="th">Status</th><th className="th text-right">Valor</th><th className="th">Ações</th></tr></thead>
+            <tbody>
+              {lista.map(a => (
+                <tr key={a.id} className={editing && editing.id === a.id ? 'is-selected' : ''}>
+                  <td className="td font-mono text-xs text-cyan-300/90">{a.tag}</td>
+                  <td className="td">{a.descricao}<br /><span className="text-xs text-slate-500">{a.categoria}</span></td>
+                  <td className="td">{a.local}</td>
+                  <td className="td text-slate-400">{a.responsavel}</td>
+                  <td className="td"><span className={`badge ${cls[a.status]}`}>{a.status}</span></td>
+                  <td className="td text-right tabular-nums">{brl.format(a.valor)}</td>
+                  <td className="td whitespace-nowrap">
+                    <button className="btn btn-ghost btn-sm" onClick={() => abrir(a)} aria-label={`Editar ${a.tag}`}>Editar</button>{' '}
+                    <button className="btn btn-danger btn-sm" onClick={() => excluir(a)} aria-label={`Excluir ${a.tag}`}>Excluir</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!lista.length && <p className="p-8 text-center text-slate-500 text-sm">Nenhum bem encontrado com esse filtro.</p>}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Auditoria ---------- */
+function Auditoria({ db }) {
+  return (
+    <div className="space-y-5 fade-in">
+      <div>
+        <p className="eyebrow">Rastreabilidade</p>
+        <h2 className="font-display text-3xl font-semibold text-white mt-1">Registro de auditoria</h2>
+        <p className="text-slate-400 text-sm mt-1">Cada cadastro, alteração, exclusão e movimentação fica registrado com data e hora.</p>
+      </div>
+      <div className="glass overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr><th className="th">Quando</th><th className="th">Ação</th><th className="th">Registro</th><th className="th">Detalhe</th></tr></thead>
+            <tbody>
+              {db.audit.slice(0, 200).map(a => (
+                <tr key={a.id}>
+                  <td className="td tabular-nums whitespace-nowrap text-slate-400">{new Date(a.quando).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</td>
+                  <td className="td">{a.acao}</td>
+                  <td className="td text-slate-400">{a.entidade}</td>
+                  <td className="td">{a.detalhe}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- App ---------- */
+const NAV = [['painel', 'Painel'], ['estoque', 'Produtos'], ['movimentacoes', 'Movimentações'], ['patrimonio', 'Patrimônio'], ['auditoria', 'Auditoria']];
+
+function App() {
+  const [db, setDb] = useState(() => load() || seed());
+  const [view, setView] = useState(viewFromHash);
+  const [toasts, setToasts] = useState([]);
+  const [conf, setConf] = useState(null);
+  const navRef = useRef(null);
+  const [pill, setPill] = useState({ x: 0, w: 0, ready: false });
+  useLayoutEffect(() => {
+    const medir = () => {
+      const el = navRef.current && navRef.current.querySelector('[aria-current="page"]');
+      if (el) setPill({ x: el.offsetLeft, w: el.offsetWidth, ready: true });
+    };
+    medir();
+    addEventListener('resize', medir);
+    return () => removeEventListener('resize', medir);
+  }, [view]);
+
+  useEffect(() => { if (!save(db)) notify('Não foi possível salvar neste navegador. As alterações valem só até fechar a página.', 'erro'); }, [db]);
+  useEffect(() => {
+    const h = () => setView(viewFromHash());
+    addEventListener('hashchange', h);
+    if (!location.hash) history.replaceState(null, '', '#painel');
+    return () => removeEventListener('hashchange', h);
+  }, []);
+
+  const notify = useCallback((msg, tipo = 'ok') => {
+    const id = uid();
+    setToasts(t => [...t, { id, msg, tipo }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4500);
+  }, []);
+
+  // Toda mudança passa por aqui: altera o estado, registra auditoria e confirma.
+  const mutate = useCallback((fn, acao, entidade, detalhe) => {
+    setDb(prev => {
+      const n = JSON.parse(JSON.stringify(prev));
+      fn(n);
+      n.audit.unshift({ id: uid(), quando: new Date().toISOString(), acao, entidade, detalhe });
+      if (n.audit.length > 300) n.audit.length = 300;
+      return n;
+    });
+  }, []);
+  const ask = useCallback((titulo, texto, onOk) => setConf({ titulo, texto, onOk }), []);
+  const ctx = { mutate, notify, ask };
+
+  const reset = (fn, msg) => { ask(msg.titulo, msg.texto, () => { setDb(fn()); notify(msg.ok); }); };
+
+  return (
+    <>
+      <a href="#conteudo" className="skip btn btn-primary">Pular para o conteúdo</a>
+      <header className="sticky top-0 z-40 border-b border-white/5 backdrop-blur-xl" style={{ background: 'rgba(5,7,13,.72)' }}>
+        <div className="gutter mx-auto max-w-6xl py-3.5 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="grid place-items-center w-10 h-10 rounded-xl font-display font-bold text-void" style={{ background: 'linear-gradient(135deg,#67E8F9,#A78BFA)' }} aria-hidden="true">LI</span>
+            <div>
+              <p className="text-[10px] uppercase tracking-[.18em] text-slate-500">Logística Inteligente Ltda.</p>
+              <h1 className="font-display text-lg font-semibold text-white leading-tight">Estoque <span className="text-cyan-300">·</span> Patrimônio</h1>
+            </div>
+          </div>
+          <nav aria-label="Principal" className="w-full md:w-auto min-w-0 overflow-x-auto">
+            <ul ref={navRef} className="relative flex gap-1 min-w-max">
+              <span className="nav-pill" aria-hidden="true" style={{ transform: `translateX(${pill.x}px)`, width: pill.w, opacity: pill.ready ? 1 : 0 }} />
+              {NAV.map(([id, label]) => (
+                <li key={id}><a className="nav-link" href={'#' + id} aria-current={view === id ? 'page' : undefined}>{label}</a></li>
+              ))}
+            </ul>
+          </nav>
+        </div>
+      </header>
+
+      <main id="conteudo" tabIndex={-1} className="gutter mx-auto max-w-6xl py-8 space-y-6 outline-none">
+        {db.exemplo && (
+          <div className="glass px-5 py-3 flex flex-wrap items-center justify-between gap-3 text-sm">
+            <p className="text-slate-300"><span className="text-cyan-300 font-semibold">Dados de exemplo.</span> Produtos e bens fictícios, para demonstração.</p>
+            <button className="btn btn-ghost btn-sm" onClick={() => reset(() => vazio(), { titulo: 'Apagar todos os dados?', texto: 'Produtos, movimentações, patrimônio e auditoria serão removidos deste navegador.', ok: 'Dados apagados. Comece cadastrando um produto.' })}>Apagar tudo e começar do zero</button>
+          </div>
+        )}
+        <div key={view} className="view-in space-y-6">
+          {view === 'painel' && <Painel db={db} />}
+          {view === 'estoque' && <Produtos db={db} ctx={ctx} />}
+          {view === 'movimentacoes' && <Movimentacoes db={db} ctx={ctx} />}
+          {view === 'patrimonio' && <Patrimonio db={db} ctx={ctx} />}
+          {view === 'auditoria' && <Auditoria db={db} />}
+        </div>
+        <footer className="text-xs text-slate-600 pt-4">
+          Os dados ficam salvos neste navegador. Em produção, a validação definitiva e a autenticação devem ser feitas no servidor.
+        </footer>
+      </main>
+
+      <Modal conf={conf} onClose={() => setConf(null)} />
+      <Toasts items={toasts} />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
