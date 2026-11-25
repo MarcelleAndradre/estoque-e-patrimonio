@@ -1,4 +1,6 @@
 /* ---------- Persistência (try/catch: localStorage pode falhar) ---------- */
+
+/* dados ficam no db, com as listas e try/catch, caso o navegador bloqueei o armazenamento */
 const vazio = () => ({ v: 2, exemplo: false, products: [], movements: [], assets: [], audit: [] });
 function load() {
   try {
